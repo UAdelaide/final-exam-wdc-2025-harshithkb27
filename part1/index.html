@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dog Walking Service - Dog of the Day</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    /* Intentionally bad color contrast and confusing layout */
+    body {
+      background-color: #333;
+      color: #666; /* Low contrast text */
+      font-family: 'Comic Sans MS', cursive, sans-serif; /* Hard to take seriously */
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      width: 90vw;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+    .dog-info, .dog-image {
+      width: 48%;
+      margin: 1%;
+      /* Using tiny clickable areas for the button */
+      position: relative;
+    }
+    button {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 30px;
+      height: 30px;
+      font-size: 6px;
+      cursor: pointer;
+      background-color: #555;
+      color: #555; /* Invisible button text */
+      border: none;
+    }
+    img {
+      width: 100%;
+      height: auto;
+      filter: blur(3px); /* Blurred image to increase cognitive load */
+    }
+    /* Excessive animations to increase kinematic load */
+    @keyframes shake {
+      0%, 100% { transform: rotate(0deg); }
+      25% { transform: rotate(5deg); }
+      75% { transform: rotate(-5deg); }
+    }
+    .dog-info {
+      animation: shake 2s infinite;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="container" role="main">
+    <div class="dog-info" tabindex="0" aria-label="Dog details shaking to annoy">
+      <h1>Dog of the Day: <span>{{ dog.name }}</span></h1>
+      <p>Breed: <strong>{{ dog.breed }}</strong></p>
+      <p>Age: <strong>{{ dog.age }}</strong> years</p>
+      <button @click="refreshDog" aria-label="Refresh dog picture">R</button>
+    </div>
+    <div class="dog-image">
+      <img :src="dog.imageUrl" alt="Random dog picture blurred" />
+    </div>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          dog: {
+            name: 'Scruffy',
+            breed: 'Mystery Mix',
+            age: 7,
+            imageUrl: ''
+          }
+        };
+      },
+      methods: {
+        async fetchDog() {
+          try {
+            const res = await fetch('https://dog.ceo/api/breeds/image/random');
+            const data = await res.json();
+            this.dog.imageUrl = data.message;
+          } catch (err) {
+            console.error('Failed to fetch dog image:', err);
+            this.dog.imageUrl = 'https://via.placeholder.com/400?text=No+Dog+Image';
+          }
+        },
+        refreshDog() {
+          this.fetchDog();
+        }
+      },
+      mounted() {
+        this.fetchDog();
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

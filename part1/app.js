@@ -2,130 +2,144 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 
 const app = express();
-const port = 3000;
+let db;
 
-// Create MySQL connection pool (adjust credentials as needed)
-const pool = mysql.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: '', // add your password
-  database: 'DogWalkService',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
+async function setupDatabase() {
+  // Connect without DB to create it first
+  const connection = await mysql.createConnection({
+    host: 'localhost',
+    user: 'root',
+    password: '' // change if needed
+  });
 
-// Function to insert sample data on startup for testing
-async function insertSampleData() {
-  try {
-    // Insert users (ignore duplicates)
-    await pool.query(`
-      INSERT IGNORE INTO Users (username, email, password_hash, role)
-      VALUES
-        ('alice123', 'alice@example.com', 'hashed123', 'owner'),
-        ('bobwalker', 'bob@example.com', 'hashed456', 'walker'),
-        ('carol123', 'carol@example.com', 'hashed789', 'owner'),
-        ('newwalker', 'newwalker@example.com', 'hashed000', 'walker');
+  await connection.query('CREATE DATABASE IF NOT EXISTS dogwalks');
+  await connection.end();
+
+  // Connect with DB selected
+  db = await mysql.createConnection({
+    host: 'localhost',
+    user: 'root',
+    password: '',
+    database: 'dogwalks'
+  });
+
+  // Create tables if not exist
+  await db.execute(`CREATE TABLE IF NOT EXISTS owners (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS walkers (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS dogs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    size VARCHAR(20) NOT NULL,
+    owner_id INT,
+    FOREIGN KEY (owner_id) REFERENCES owners(id)
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS walkrequests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    dog_id INT,
+    walker_id INT,
+    requested_time DATETIME,
+    location VARCHAR(100),
+    duration_minutes INT,
+    status VARCHAR(20),
+    FOREIGN KEY (dog_id) REFERENCES dogs(id),
+    FOREIGN KEY (walker_id) REFERENCES walkers(id)
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS ratings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    walker_id INT,
+    rating INT CHECK (rating BETWEEN 1 AND 5),
+    FOREIGN KEY (walker_id) REFERENCES walkers(id)
+  )`);
+
+  // Seed data if empty
+  const [[{ count }]] = await db.execute('SELECT COUNT(*) AS count FROM owners');
+  if (count === 0) {
+    await db.execute(`INSERT INTO owners (username) VALUES ('alice123'), ('carol123')`);
+    await db.execute(`INSERT INTO walkers (username) VALUES ('bobwalker'), ('newwalker')`);
+    await db.execute(`INSERT INTO dogs (name, size, owner_id) VALUES
+      ('Max', 'medium', (SELECT id FROM owners WHERE username='alice123')),
+      ('Bella', 'small', (SELECT id FROM owners WHERE username='carol123'))
     `);
-
-    // Insert dogs (ignore duplicates)
-    await pool.query(`
-      INSERT IGNORE INTO Dogs (owner_id, name, size)
-      SELECT u.user_id, d.name, d.size FROM
-      (SELECT 'Max' AS name, 'medium' AS size, 'alice123' AS owner) d
-      JOIN Users u ON u.username = d.owner
-      UNION ALL
-      SELECT u.user_id, d.name, d.size FROM
-      (SELECT 'Bella', 'small', 'carol123') d
-      JOIN Users u ON u.username = d.owner;
+    await db.execute(`INSERT INTO walkrequests (dog_id, walker_id, requested_time, location, duration_minutes, status) VALUES
+      ((SELECT id FROM dogs WHERE name='Max'), (SELECT id FROM walkers WHERE username='bobwalker'), '2025-06-10 08:00:00', 'Parklands', 30, 'open'),
+      ((SELECT id FROM dogs WHERE name='Bella'), (SELECT id FROM walkers WHERE username='newwalker'), '2025-06-10 09:30:00', 'Beachside Ave', 45, 'accepted')
     `);
-
-    // Since MySQL doesn't support INSERT IGNORE with JOIN well, insert individually:
-    const users = await pool.query("SELECT user_id, username FROM Users WHERE username IN ('alice123','carol123')");
-    const userMap = {};
-    users[0].forEach(u => userMap[u.username] = u.user_id);
-
-    await pool.query(`
-      INSERT IGNORE INTO Dogs (owner_id, name, size) VALUES
-      (?, 'Max', 'medium'),
-      (?, 'Bella', 'small')
-    `, [userMap['alice123'], userMap['carol123']]);
-
-    // Insert walk requests (ignore duplicates)
-    // For testing simplicity, delete all first (optional)
-    await pool.query(`DELETE FROM WalkRequests`);
-    await pool.query(`
-      INSERT INTO WalkRequests (dog_id, requested_time, duration_minutes, location, status)
-      VALUES
-        ((SELECT dog_id FROM Dogs WHERE name='Max' AND owner_id=?), '2025-06-10 08:00:00', 30, 'Parklands', 'open'),
-        ((SELECT dog_id FROM Dogs WHERE name='Bella' AND owner_id=?), '2025-06-10 09:30:00', 45, 'Beachside Ave', 'accepted')
-    `, [userMap['alice123'], userMap['carol123']]);
-
-  } catch (err) {
-    console.error("Error inserting sample data:", err);
+    await db.execute(`INSERT INTO ratings (walker_id, rating) VALUES
+      ((SELECT id FROM walkers WHERE username='bobwalker'), 5),
+      ((SELECT id FROM walkers WHERE username='bobwalker'), 4)
+    `);
   }
 }
 
-// Route: GET /api/dogs
-app.get('/api/dogs', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`
-      SELECT d.name AS dog_name, d.size, u.username AS owner_username
-      FROM Dogs d
-      JOIN Users u ON d.owner_id = u.user_id
-    `);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to retrieve dogs' });
-  }
-});
+setupDatabase().then(() => {
+  // Routes
 
-// Route: GET /api/walkrequests/open
-app.get('/api/walkrequests/open', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`
-      SELECT wr.request_id, d.name AS dog_name, wr.requested_time, wr.duration_minutes, wr.location, u.username AS owner_username
-      FROM WalkRequests wr
-      JOIN Dogs d ON wr.dog_id = d.dog_id
-      JOIN Users u ON d.owner_id = u.user_id
-      WHERE wr.status = 'open'
-    `);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to retrieve open walk requests' });
-  }
-});
+  app.get('/api/dogs', async (req, res) => {
+    try {
+      const [rows] = await db.execute(`
+        SELECT dogs.name AS dog_name, dogs.size, owners.username AS owner_username
+        FROM dogs
+        JOIN owners ON dogs.owner_id = owners.id
+      `);
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: 'Could not fetch dogs' });
+    }
+  });
 
-// Route: GET /api/walkers/summary
-app.get('/api/walkers/summary', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`
-      SELECT
-        u.username AS walker_username,
-        COUNT(wr.rating) AS total_ratings,
-        AVG(wr.rating) AS average_rating,
-        COUNT(CASE WHEN wr.status = 'completed' THEN 1 END) AS completed_walks
-      FROM Users u
-      LEFT JOIN WalkRatings wr ON u.user_id = wr.walker_id
-      LEFT JOIN WalkRequests req ON wr.request_id = req.request_id
-      WHERE u.role = 'walker'
-      GROUP BY u.user_id, u.username
-    `);
-    // Convert average_rating to float or null if no ratings
-    const result = rows.map(r => ({
-      walker_username: r.walker_username,
-      total_ratings: Number(r.total_ratings),
-      average_rating: r.average_rating !== null ? Number(parseFloat(r.average_rating).toFixed(2)) : null,
-      completed_walks: Number(r.completed_walks),
-    }));
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to retrieve walkers summary' });
-  }
-});
+  app.get('/api/walkrequests/open', async (req, res) => {
+    try {
+      const [rows] = await db.execute(`
+        SELECT
+          wr.id AS request_id,
+          d.name AS dog_name,
+          wr.requested_time,
+          wr.duration_minutes,
+          wr.location,
+          o.username AS owner_username
+        FROM walkrequests wr
+        JOIN dogs d ON wr.dog_id = d.id
+        JOIN owners o ON d.owner_id = o.id
+        WHERE wr.status = 'open'
+      `);
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: 'Could not fetch open walk requests' });
+    }
+  });
 
-// Start server and insert sample data
-app.listen(port, async () => {
-  console.log(`DogWalkService API listening on port ${port}`);
-  await insertSampleData();
+  app.get('/api/walkers/summary', async (req, res) => {
+    try {
+      const [rows] = await db.execute(`
+        SELECT
+          w.username AS walker_username,
+          COUNT(r.id) AS total_ratings,
+          AVG(r.rating) AS average_rating,
+          COUNT(CASE WHEN wr.status = 'completed' THEN 1 END) AS completed_walks
+        FROM walkers w
+        LEFT JOIN ratings r ON w.id = r.walker_id
+        LEFT JOIN walkrequests wr ON w.id = wr.walker_id
+        GROUP BY w.id, w.username
+      `);
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: 'Could not fetch walker summaries' });
+    }
+  });
+
+  app.listen(8080, () => {
+    console.log('Server listening on http://localhost:8080');
+  });
+}).catch(err => {
+  console.error('Failed to setup database:', err);
 });
